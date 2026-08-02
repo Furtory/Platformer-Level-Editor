@@ -6526,6 +6526,22 @@ document.addEventListener('keydown', function(e) {
     }
   }
 
+  // ===== 鼠标左键按住拖动人物（isCharDragging）期间：拦截"人物控制相关按键" =====
+  // 防止用户在拖动时不小心按到 WASD/Shift/Space/S/R 让人物意外移动/跳跃/下蹲/冲刺/回传
+  // 仍然放行 Ctrl+Z/Ctrl+Y 撤回还原等非人物快捷键，避免打断平台编辑
+  if (isCharDragging) {
+    const isCharCtrlKey = (
+      e.code === 'KeyA' || e.code === 'KeyS' || e.code === 'KeyD' || e.code === 'KeyW' ||
+      e.code === 'Space' || e.code === 'KeyR' ||
+      e.code === 'ShiftLeft' || e.code === 'ShiftRight'
+    );
+    if (isCharCtrlKey) {
+      e.preventDefault();
+      return;           // 不写入 keys[]，下面的人物控制/跳跃/下蹲/R 全部跳过
+    }
+    // 其它键（撤回/还原等）正常继续
+  }
+
   keys[e.code] = true;
 
   // W/Space → 跳跃；下蹲/冲刺/冲刺蹲中禁止跳跃（必须先退档/松S再按）
