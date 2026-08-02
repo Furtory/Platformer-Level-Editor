@@ -2747,6 +2747,12 @@ let drawPreview = null;
 let drawCrosshairV = null; // 十字垂直虚线
 let drawCrosshairH = null; // 十字水平虚线
 let drawCoordTip = null;   // 坐标提示
+// 记录绘制模式下鼠标最后一次位置（屏幕客户端坐标）与是否在舞台内
+// 缩放世界时（wheel/按钮/autoFit）需要据此刷新十字虚线与坐标提示，
+// 否则鼠标静止时提示的 X/Y 世界坐标会随缩放变得不准确
+let drawLastMouseClientX = 0;
+let drawLastMouseClientY = 0;
+let drawMouseInStage = false;
 let drawZoom = 1;
 let drawMapLeft = 0;
 let drawMapTop = 0;
@@ -3604,14 +3610,15 @@ stageEl.addEventListener('dblclick', function(e) {
   showResizeHandles(idx);
 });
 
-document.addEventListener('mousemove', function(e) {
-  if (!drawMode) return;
-
-  // ========= 更新十字虚线和坐标提示 =========
+// 根据鼠标屏幕坐标刷新十字虚线与坐标提示（内容、定位）
+// 同时被 mousemove 与缩放逻辑调用：缩放时鼠标静止，需据此重算 X/Y 世界坐标
+// 返回当前鼠标对应的世界像素坐标 {x, y}（供 resizing/框选等复用）
+function updateDrawCrosshairAndTip(clientX, clientY) {
+  if (!drawMode) return null;
   // 十字虚线SVG放到stageEl中，使用舞台屏幕坐标（不随地图缩放），精确对齐像素
   const stageRect = stageEl.getBoundingClientRect();
-  const screenX = e.clientX - stageRect.left;  // 舞台内屏幕X（left=0）
-  const screenY = e.clientY - stageRect.top;   // 舞台内屏幕Y（top=0）
+  const screenX = clientX - stageRect.left;  // 舞台内屏幕X（left=0）
+  const screenY = clientY - stageRect.top;   // 舞台内屏幕Y（top=0）
   // stroke-width=3为奇数，坐标+0.5对齐像素边界；用Math.round取整再偏移
   const snapX = Math.round(screenX) + 0.5;
   const snapY = Math.round(screenY) + 0.5;
@@ -3621,7 +3628,7 @@ document.addEventListener('mousemove', function(e) {
   // 坐标提示使用世界坐标计算数值，但用屏幕坐标定位（在stageEl内，无需反向缩放）
   const curMapLeft = parseFloat(mapEl.style.left) || 0;
   const curMapTop = parseFloat(mapEl.style.top) || 0;
-  const coord = screenToMapCoord(e.clientX, e.clientY, zoom, curMapLeft, curMapTop);
+  const coord = screenToMapCoord(clientX, clientY, zoom, curMapLeft, curMapTop);
 
   if (drawCrosshairV && drawCrosshairH) {
     const lineV = drawCrosshairV.querySelector('.crosshair-line-v');
@@ -3700,6 +3707,17 @@ document.addEventListener('mousemove', function(e) {
     drawCoordTip.style.left = tipLeft + 'px';
     drawCoordTip.style.top = tipTop + 'px';
   }
+  return coord;
+}
+
+document.addEventListener('mousemove', function(e) {
+  if (!drawMode) return;
+
+  // ========= 更新十字虚线和坐标提示 =========
+  drawLastMouseClientX = e.clientX;
+  drawLastMouseClientY = e.clientY;
+  drawMouseInStage = true;
+  const coord = updateDrawCrosshairAndTip(e.clientX, e.clientY);
 
   // ========= 调整平台大小（使用世界像素坐标，避免浮点精度问题） =========
   if (resizingEdge && resizeTarget !== null && resizeStart) {
@@ -4298,6 +4316,10 @@ function applyZoom() {
     applyGridColor();
   }
   if (resizeTarget !== null) positionResizeHandles();
+  // 缩放后鼠标静止，需据此重算坐标提示的 X/Y 世界坐标与定位
+  if (drawMode && drawMouseInStage) {
+    updateDrawCrosshairAndTip(drawLastMouseClientX, drawLastMouseClientY);
+  }
 }
 function centerMap() {
   const sw = stageEl.clientWidth || 800;
@@ -4308,6 +4330,11 @@ function centerMap() {
   const oy = Math.max(0, (sh - scaledH) / 2);
   mapEl.style.left = ox + 'px';
   mapEl.style.top  = oy + 'px';
+  // centerMap 会在 autoFitZoom/resize 中 applyZoom 之后再次移动地图，
+  // 此前 applyZoom 内的刷新使用了旧位置，这里用最终位置重算一次
+  if (drawMode && drawMouseInStage) {
+    updateDrawCrosshairAndTip(drawLastMouseClientX, drawLastMouseClientY);
+  }
 }
 function autoFitZoom() {
   const sw = stageEl.clientWidth || 800;
@@ -5048,13 +5075,20 @@ renderHintContent('normal');
 stageEl.addEventListener('mouseenter', showHint);
 stageEl.addEventListener('mouseleave', function() {
   hideHintSoon();
+  // 鼠标已离开舞台：标记后 zoom 不再据此刷新提示
+  drawMouseInStage = false;
   // 隐藏十字虚线和坐标提示
   if (drawCrosshairV) drawCrosshairV.style.display = 'none';
   if (drawCrosshairH) drawCrosshairH.style.display = 'none';
   if (drawCoordTip) drawCoordTip.style.display = 'none';
 });
-stageEl.addEventListener('mouseenter', function() {
+stageEl.addEventListener('mouseenter', function(e) {
   showHint();
+  // 鼠标进入舞台：恢复后 zoom 可据此刷新提示
+  drawMouseInStage = true;
+  // 记录进入位置，避免进入后尚未 mousemove 就缩放时用 (0,0) 重算
+  drawLastMouseClientX = e.clientX;
+  drawLastMouseClientY = e.clientY;
   // 恢复显示
   if (drawCrosshairV) drawCrosshairV.style.display = 'block';
   if (drawCrosshairH) drawCrosshairH.style.display = 'block';
