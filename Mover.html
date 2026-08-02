@@ -19,7 +19,7 @@
     position:absolute; top:0;
     left:340px; right:340px; bottom:0;
     background:var(--bg-color, linear-gradient(180deg, #2a2a40 0%, #15151e 100%));
-    overflow:hidden; outline:none;
+    overflow:hidden; outline:none; z-index:1;
     transition: left 0.3s ease;
   }
   body.sidebar-collapsed #stage { left:0; }
@@ -498,7 +498,7 @@
     background:rgba(0,0,0,0.65); color:#ddd; font-size:13px;
     border-radius:6px; pointer-events:auto;
     opacity:0; transition:opacity 0.3s ease;
-    z-index:50; line-height:1.6;
+    z-index:9999; line-height:1.6;
     text-align:center;
   }
   #hintTip.visible { opacity:1; }
@@ -2373,22 +2373,32 @@ sidebarToggle.addEventListener('click', function() {
   document.body.classList.toggle('sidebar-collapsed');
   sidebarToggle.textContent = willCollapse ? '\u25B6' : '\u25C0';
   
-  const rightW = 340;
-  const leftW = willCollapse ? 0 : 340;
-  const targetStageW = window.innerWidth - leftW - rightW;
-  const targetStageH = window.innerHeight;
-  const margin = 40;
-  const fitW = (targetStageW - margin * 2) / mapTotalW;
-  const fitH = (targetStageH - margin * 2) / mapTotalH;
-  zoom = Math.min(3, Math.max(0.1, Math.min(fitW, fitH)));
-  zoom = Math.round(zoom * 100) / 100;
-  applyZoom();
-  const scaledW = mapTotalW * zoom;
-  const scaledH = mapTotalH * zoom;
-  const ox = Math.max(0, (targetStageW - scaledW) / 2);
-  const oy = Math.max(0, (targetStageH - scaledH) / 2);
-  mapEl.style.left = ox + 'px';
-  mapEl.style.top  = Math.max(0, oy) + 'px';
+  // 摄像机锁定人物时：保持当前世界缩放等级不变，
+  // 也不手动居中地图（舞台宽度变化期间每帧 followCharacter 会按角色持续居中）
+  if (!cameraLocked) {
+    const rightW = 340;
+    const leftW = willCollapse ? 0 : 340;
+    const targetStageW = window.innerWidth - leftW - rightW;
+    const targetStageH = window.innerHeight;
+    const margin = 40;
+    const fitW = (targetStageW - margin * 2) / mapTotalW;
+    const fitH = (targetStageH - margin * 2) / mapTotalH;
+    zoom = Math.min(3, Math.max(0.1, Math.min(fitW, fitH)));
+    zoom = Math.round(zoom * 100) / 100;
+    applyZoom();
+    const scaledW = mapTotalW * zoom;
+    const scaledH = mapTotalH * zoom;
+    const ox = Math.max(0, (targetStageW - scaledW) / 2);
+    const oy = Math.max(0, (targetStageH - scaledH) / 2);
+    mapEl.style.left = ox + 'px';
+    mapEl.style.top  = Math.max(0, oy) + 'px';
+  } else {
+    // 锁定模式下仍需同步缩放按钮百分比显示（zoom 未变），并触发一次坐标提示刷新（舞台尺寸变化）
+    zoomResetBtn.textContent = Math.round(zoom * 100) + '%';
+    if (drawMode && drawMouseInStage) {
+      updateDrawCrosshairAndTip(drawLastMouseClientX, drawLastMouseClientY);
+    }
+  }
 });
 
 let worldW = 30 * GRID;
@@ -3277,6 +3287,11 @@ platDrawBtn.addEventListener('click', function() {
       drawCoordTip = document.createElement('div');
       drawCoordTip.style.cssText = 'position:absolute;color:#42ffff;background:rgba(0,0,0,0.5);padding:3px 6px;border-radius:4px;font-size:14px;font-weight:bold;font-family:inherit;pointer-events:none;z-index:61;white-space:pre-line;display:none;';
       stageEl.appendChild(drawCoordTip);
+
+      // 最后把顶部操作提示气泡重排到 stageEl 子节点末尾：
+      //   保证 hintTip 在 DOM 顺序上也在十字虚线 + 坐标提示之后，
+      //   即使极端场景下 z-index 判定被绕过，也能用 DOM 后序渲染作为兜底
+      if (hintTip && hintTip.parentNode === stageEl) stageEl.appendChild(hintTip);
     }
   } else {
     platDrawBtn.textContent = '绘制平台';
@@ -6495,6 +6510,22 @@ function checkStandUpOverlap() {
 }
 
 document.addEventListener('keydown', function(e) {
+  // ===== 文本输入框焦点处理：A/S/D/W → 焦点切回舞台并视作移动输入；其他键 → 交给输入框继续输入 =====
+  const _isTextInput = isTextFormInput(e.target);
+
+  if (_isTextInput) {
+    const asdw = (e.code === 'KeyA' || e.code === 'KeyS' || e.code === 'KeyD' || e.code === 'KeyW');
+    if (asdw) {
+      // ASDW：切到舞台，然后走正常的跳跃/下蹲/移动
+      e.preventDefault();
+      try { stageEl.focus(); } catch(_) {}
+      // 继续往下：下方游戏逻辑会把该按键注册为移动/跳跃/下蹲
+    } else {
+      // 其余键（数字、小数点、退格、方向键等）：交给输入框，不触发游戏逻辑
+      return;
+    }
+  }
+
   keys[e.code] = true;
 
   // W/Space → 跳跃；下蹲/冲刺/冲刺蹲中禁止跳跃（必须先退档/松S再按）
@@ -6925,22 +6956,27 @@ function updateStatus() {
     (smoothSpeedEnabled && !sprintMode ? '<br><span style="color:#bd93f9">当前速度：</span>' + displaySpd.toFixed(2) + '格/s' : '');
 }
 
-/* ==================== 记录表格 ==================== */
+/* ==================== 记录表格（倒序：最新记录在最前） ==================== */
 function renderRecordTable() {
   recordBody.innerHTML = '';
-  jumpRecords.forEach(function(r, idx) {
+  const n = jumpRecords.length;
+  // 从末尾倒序遍历：越晚 push 进数组的（最新）越先渲染，排在最上面
+  for (let i = n - 1; i >= 0; i--) {
+    const r = jumpRecords[i];
+    const origNo = i + 1; // 序号保持 push 顺序（第一条=1，最新的=n）
     const tr = document.createElement('tr');
     tr.innerHTML =
-      '<td>' + (idx+1) + '</td>' +
+      '<td>' + origNo + '</td>' +
       '<td style="color:' + stateColors.jump + '">' + r.time.toFixed(4) + 's</td>' +
       '<td style="color:' + stateColors.walk + '">' + r.height.toFixed(2) + '</td>' +
       '<td style="color:' + stateColors.walk + '">' + r.distance.toFixed(2) + '格</td>' +
       '<td style="color:' + stateColors.jump + '">' + r.jumps + '次</td>' +
       '<td style="color:#ffeb35;">' + r.sprints + '次</td>';
     recordBody.appendChild(tr);
-  });
+  }
   countLabel.textContent = '(' + jumpRecords.length + ')';
-  if (jumpRecords.length > 10 && scrollBox) scrollBox.scrollTop = scrollBox.scrollHeight;
+  // 倒序后新记录自动出现在顶部：超过 10 条时滚动条回到最上方，确保最新记录可见
+  if (jumpRecords.length > 10 && scrollBox) scrollBox.scrollTop = 0;
 }
 clearBtn.addEventListener('click', function() { jumpRecords = []; renderRecordTable(); });
 
@@ -7634,6 +7670,225 @@ function loop(ts) {
 
 fpsInput.addEventListener('input', function() { fps = Math.max(1, +fpsInput.value || 10); });
 fps = +fpsInput.value || 10;
+
+/* ==================== 输入框通用约束：仅数字+小数点 & A/S/D/W 切舞台焦点 ==================== */
+// 判断一个元素是否为"可输入文本的表单控件"，需要数值校验与 ASDW 焦点转移
+function isTextFormInput(el) {
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName.toUpperCase();
+  if (tag === 'TEXTAREA') return true;
+  if (el.isContentEditable) return true;
+  if (tag !== 'INPUT') return false;
+  const t = (el.type || '').toLowerCase();
+  // 非文本输入类 input：颜色、复选、单选、文件、范围、按钮、日期等，不参与校验
+  if (['color','checkbox','radio','file','range','button','submit','reset','hidden','image',
+       'date','datetime-local','month','week','time'].includes(t)) return false;
+  return true; // 包括 number/text/search/tel/password/url/email 等文本可输入类
+}
+// 数字字符串规范化：
+// 1) 空 / 仅符号 → "0"
+// 2) "." 或 "-." 自动补 0 前缀 → "0." / "-0."
+// 3) 去前导多余 0："0012.34" → "12.34"，"00.34" → "0.34"，"-0012.34" → "-12.34"，"-0.34" → "-0.34"
+function normalizeNumeric(str) {
+  if (str == null) str = '';
+  let s = String(str);
+  // 提前提取负号
+  let neg = false;
+  if (s.startsWith('-')) { neg = true; s = s.slice(1); }
+  // 空串 → 0
+  if (s === '' || s === '.') {
+    return neg ? '-0' : (s === '.' ? '0.' : '0');
+  }
+  // 整数部分去前导 0
+  const dotI = s.indexOf('.');
+  if (dotI === -1) {
+    // 无小数：纯整数
+    let intPart = s.replace(/^0+/, '');
+    if (intPart === '') intPart = '0';
+    s = intPart;
+  } else {
+    let intPart = s.slice(0, dotI).replace(/^0+/, '');
+    if (intPart === '') intPart = '0';
+    const decPart = s.slice(dotI + 1);
+    s = intPart + '.' + decPart;
+  }
+  return (neg ? '-' : '') + s;
+}
+// 把字符串清洗为允许前缀 '-' + [0-9.] + 至多一个小数点，然后规范化
+function sanitizeNumeric(str) {
+  if (str == null) return normalizeNumeric('');
+  let s = String(str).replace(/[^0-9.\-]/g, '');
+  // 保留至多一个前置负号：把第一个 '-' 移到索引 0（如果存在）
+  const firstDash = s.indexOf('-');
+  if (firstDash !== -1) {
+    s = '-' + s.replace(/\-/g, '');
+  }
+  // 保留至多一个小数点（第一个出现的）
+  const firstDot = s.indexOf('.');
+  if (firstDot !== -1) s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, '');
+  return normalizeNumeric(s);
+}
+// input 事件：事后兜底清洗（IME、粘贴后、浏览器原生 number 输入 e/E/+/- 后）
+document.addEventListener('input', function(e) {
+  const el = e.target;
+  if (!isTextFormInput(el)) return;
+  // keydown 捕获手动派发的 input 事件：值已由 keydown 逻辑确定，
+  // 为避免 number 控件强制重写造成干扰，跳过此轮清洗
+  if (el._sanitizeSkipOnce) {
+    delete el._sanitizeSkipOnce;
+    return;
+  }
+  // number 类型浏览器也可能接受 'e'/'E'/'+'/'-'，全部清洗
+  const cleaned = sanitizeNumeric(el.value);
+  const isNumberInput = (el.type || '').toLowerCase() === 'number';
+  // Chrome 的 number 控件：输入 -/+/e/E 时视觉上显示字符，但因不是合法完整数字，.value 返回空串
+  // 这种情况 cleaned === el.value（两边都是空串）会被误判为"无需更新"，导致脏视觉残留。
+  // 所以：number 类型无论新旧值是否相等都强制回写一次；其它类型走等值短路优化
+  if (cleaned !== el.value || isNumberInput) {
+    // 记录光标位置：若用户在中间输入，保持相对位置
+    let pos = el.selectionStart;
+    if (typeof pos === 'number') {
+      const before = (el.value || '').slice(0, pos);
+      const beforeClean = sanitizeNumeric(before);
+      pos = beforeClean.length;
+    }
+    el.value = cleaned;
+    try { el.setSelectionRange(pos, pos); } catch(_) {}
+    // 捕获阶段先于业务 target-phase 监听器完成清洗；无需重新派发 input 事件
+    // （业务监听器在 target phase 执行时，读取 el.value 已是清洗值）
+  }
+}, true); // 捕获阶段，在业务监听器之前先清洗
+// keydown 捕获：按 -/− 翻转正负号，按 + 或 =（均无需 Shift）强制去前导负号变正；始终阻止 e/E；
+// 按键识别先按生成的字符 e.key（布局无关），再按 e.code 兜底；
+// 自动更新 el.value（去前导 0、空串兜底 0）并派发 input 事件，无需用户手动把光标移到最前面
+document.addEventListener('keydown', function(e) {
+  if (!isTextFormInput(e.target)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // 放过 Ctrl/Cmd/Alt 修饰的快捷键
+  if (e.key && e.key.length > 1) return; // 放过功能键（Tab/箭头/退格/删除/Esc/Enter等）
+  const el = e.target;
+  let action = null; // 'toggle-sign' | 'abs-sign' | 'block'
+
+  // ① 优先按实际产生的字符检测（与键盘布局/输入法无关）
+  const k = (e.key || '').toString();
+  if (k === '-' || k === '−' || k === '‒' || k === '—') {
+    // HYPHEN-MINUS / MINUS SIGN / FIGURE DASH / EM DASH — 统一视作"翻转符号"
+    action = 'toggle-sign';
+  } else if (k === '+' || k === '＋' || k === '=' || k === '＝') {
+    // PLUS / FULLWIDTH PLUS / EQUAL / FULLWIDTH EQUAL → 统一变正
+    action = 'abs-sign';
+  } else if (k.toLowerCase() === 'e') {
+    action = 'block';
+  }
+
+  // ② 兜底：按物理键 e.code 检测（处理 number 输入框等某些浏览器 e.key 被标准化的场景）
+  if (!action) {
+    switch (e.code) {
+      case 'Minus':
+      case 'NumpadSubtract':
+        action = 'toggle-sign'; break;
+      case 'NumpadAdd':
+      case 'Equal':           // 主键盘 `=`（无论是否 Shift 都变正）
+        action = 'abs-sign'; break;
+      case 'KeyE':
+        action = 'block'; break;
+    }
+  }
+  if (!action) return; // 数字/小数点/其他非控制字符交给 beforeinput+input 两层处理
+
+  if (action === 'block') { e.preventDefault(); return; }
+
+  // ===== 符号操作（toggle / abs）=====
+  e.preventDefault();
+  const rawVal = (el.value || '').toString();
+  // 取原值的"纯数字"部分（已经是 sanitizeNumeric 过的），再做符号变换
+  const numericPart = rawVal.startsWith('-') ? rawVal.slice(1) : rawVal;
+  let newVal;
+  if (action === 'toggle-sign') {
+    // 翻转：有负号则去掉；无负号或空串/纯 '.' 则加负号（一致性保证）
+    newVal = rawVal.startsWith('-') ? numericPart : ('-' + (numericPart || ''));
+  } else { // abs-sign：强制变正（删除前导负号）
+    newVal = numericPart;
+  }
+  // 规范化：去前导多余 0、空串→0、首字符为点自动补 0 前缀
+  newVal = normalizeNumeric(newVal);
+  const isNumberInput = (el.type || '').toLowerCase() === 'number';
+  // 光标位置：在符号变化后保持"相对数字字符"的位置
+  //   - 添加负号（长度+1）：原 pos >= 0 的新 pos = pos+1
+  //   - 移除负号（长度-1）：原 pos > 0 的新 pos = pos-1；原 pos === 0 仍=0
+  // 规范化可能改变总长度（如前导0被删），先计算符号变化带来的长度差再 clamp 到新长度
+  let caret = null;
+  const s0 = typeof el.selectionStart === 'number' ? el.selectionStart : null;
+  if (s0 !== null) {
+    const grew = (action === 'toggle-sign' && !rawVal.startsWith('-')); // 添加负号变长
+    const shrunk = (action === 'toggle-sign' && rawVal.startsWith('-')) ||
+                   (action === 'abs-sign' && rawVal.startsWith('-'));
+    caret = s0;
+    if (grew) caret = s0 + 1;
+    else if (shrunk) caret = Math.max(0, s0 - 1);
+    // 规范化后字符串可能更短（前导 0 删除），把光标夹到 [0, newVal.length]
+    caret = Math.max(0, Math.min(caret, newVal.length));
+  }
+  // 写回值：number 控件采用"先清空再赋值"模式，避开 Chrome 内部 visual/value 不一致的脏缓冲区
+  if (isNumberInput) el.value = '';
+  el.value = newVal;
+  if (caret !== null) {
+    try { el.setSelectionRange(caret, caret); } catch(_) { /* number 输入框在部分浏览器不支持 */ }
+  }
+  // setTimeout 0 再写一次：等当前所有 JS 同步回调（含浏览器挂起的内部输入同步）跑完后最终确认值
+  const finalVal = newVal;
+  const finalCaret = caret;
+  setTimeout(function() {
+    if (isNumberInput) el.value = '';
+    el.value = finalVal;
+    if (finalCaret !== null) {
+      try { el.setSelectionRange(finalCaret, finalCaret); } catch(_) {}
+    }
+  }, 0);
+  // 派发 input 事件（标记跳过此轮捕获清洗，避免 number 控件被强制同值回写造成视觉回退）
+  el._sanitizeSkipOnce = true;
+  const ev = new Event('input', { bubbles: true, cancelable: false });
+  el.dispatchEvent(ev);
+}, true);
+// paste 事件：拦截后手动清洗插入，避免脏值闪一下再消失
+document.addEventListener('paste', function(e) {
+  const el = e.target;
+  if (!isTextFormInput(el)) return;
+  const cdt = e.clipboardData || window.clipboardData;
+  if (!cdt) return;
+  const text = cdt.getData('text');
+  if (text == null) return;
+  e.preventDefault();
+  const cleaned = sanitizeNumeric(text);
+  // 合并到当前值：若有选中则替换选区，否则插光标处
+  const cur = el.value || '';
+  let start = el.selectionStart;
+  let end = el.selectionEnd;
+  if (typeof start !== 'number' || typeof end !== 'number') {
+    // number 输入框在部分浏览器拿不到 selection：直接拼到末尾
+    const merged = sanitizeNumeric(cur + cleaned);
+    el.value = merged;
+  } else {
+    const before = cur.slice(0, start);
+    const after = cur.slice(end);
+    const merged = sanitizeNumeric(before + cleaned + after);
+    el.value = merged;
+    const caret = sanitizeNumeric(before + cleaned).length;
+    try { el.setSelectionRange(caret, caret); } catch(_) {}
+  }
+  // 触发业务 input 监听器
+  const ev = new Event('input', { bubbles: true, cancelable: false });
+  el.dispatchEvent(ev);
+}, true);
+// beforeinput：尽可能在输入发生前拦截非数字按键（IME 与 number 类型不一定触发，兜底靠上面 input 事件）
+document.addEventListener('beforeinput', function(e) {
+  const el = e.target;
+  if (!isTextFormInput(el)) return;
+  if (e.data == null) return; // 删除/粘贴等；粘贴已由 paste 单独处理
+  // 非数字/小数点：尝试直接取消
+  if (!/^[0-9.]+$/.test(e.data) && e.cancelable) {
+    e.preventDefault();
+  }
+}, true);
 
 /* ==================== 初始化 ==================== */
 applyBackground();
