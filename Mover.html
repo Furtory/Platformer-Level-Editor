@@ -939,11 +939,19 @@
     <div id="smoothSpeedGroup" style="display:none;margin:4px 0 8px 24px;">
       <div class="row" style="display:flex;align-items:center;gap:6px;margin:2px 0;">
         <label style="flex:1;font-size:12px;">加速度（格/秒²）</label>
-        <input type="number" id="accelRate" value="3" min="0.1" step="0.1" style="width:80px;"/>
+        <input type="number" id="accelRate" value="3.0000" min="0.1" step="0.1" style="width:110px;"/>
       </div>
       <div class="row" style="display:flex;align-items:center;gap:6px;margin:2px 0;">
         <label style="flex:1;font-size:12px;">减速度（格/秒²）</label>
-        <input type="number" id="decelRate" value="5" min="0.1" step="0.1" style="width:80px;"/>
+        <input type="number" id="decelRate" value="5.0000" min="0.1" step="0.1" style="width:110px;"/>
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:6px;margin:2px 0;">
+        <label style="flex:1;font-size:12px;">加速所需距离（格）</label>
+        <input type="number" id="accelDist" value="5.3333" min="0.1" step="0.1" style="width:110px;"/>
+      </div>
+      <div class="row" style="display:flex;align-items:center;gap:6px;margin:2px 0;">
+        <label style="flex:1;font-size:12px;">减速所需距离（格）</label>
+        <input type="number" id="decelDist" value="3.2000" min="0.1" step="0.1" style="width:110px;"/>
       </div>
     </div>
   </div>
@@ -1077,6 +1085,8 @@ const smoothSpeedContainer = document.getElementById('smoothSpeedContainer');
 const smoothSpeedGroup = document.getElementById('smoothSpeedGroup');
 const accelRateIn  = document.getElementById('accelRate');
 const decelRateIn  = document.getElementById('decelRate');
+const accelDistIn  = document.getElementById('accelDist');
+const decelDistIn  = document.getElementById('decelDist');
 // 体力限制
 const staminaContainer = document.getElementById('staminaContainer');
 const chkStamina  = document.getElementById('chkStamina');
@@ -1681,8 +1691,14 @@ function applyConfig(config) {
         chkSmoothSpeed.checked = sprintMode ? false : !!cv(config.movement.smoothSpeed, false);
         if (smoothSpeedGroup) smoothSpeedGroup.style.display = chkSmoothSpeed.checked ? '' : 'none';
       }
-      if (accelRateIn) accelRateIn.value = cv(config.movement.accelRate, 3);
-      if (decelRateIn) decelRateIn.value = cv(config.movement.decelRate, 5);
+      if (accelRateIn) {
+        const v = cv(config.movement.accelRate, 3);
+        accelRateIn.value = isFinite(v) ? (+v).toFixed(4) : '3.0000';
+      }
+      if (decelRateIn) {
+        const v = cv(config.movement.decelRate, 5);
+        decelRateIn.value = isFinite(v) ? (+v).toFixed(4) : '5.0000';
+      }
       // 体力限制
       if (chkStamina) {
         chkStamina.checked = !!cv(config.movement.stamina, false);
@@ -5917,8 +5933,8 @@ function refreshFormula() {
   // 特殊选项
   jumpLockEnabled = !!(chkJumpLock && chkJumpLock.checked);
   smoothSpeedEnabled = !!(chkSmoothSpeed && chkSmoothSpeed.checked);
-  accelRate = Math.max(0.1, safeNum(accelRateIn ? accelRateIn.value : 3, 3));
-  decelRate = Math.max(0.1, safeNum(decelRateIn ? decelRateIn.value : 5, 5));
+  accelRate = Math.max(0.0001, safeNum(accelRateIn ? accelRateIn.value : 3, 3));
+  decelRate = Math.max(0.0001, safeNum(decelRateIn ? decelRateIn.value : 5, 5));
   // 体力限制
   staminaEnabled = !!(chkStamina && chkStamina.checked);
   staminaRecoverTime = Math.max(0.1, safeNum(staminaRecoverIn ? staminaRecoverIn.value : 3, 3));
@@ -5946,8 +5962,8 @@ function refreshFormula() {
     formulaEl.textContent =
       'h  = ' + hGrid + '格 = ' + safeFixed(jumpMaxH, 1) + 'px\n' +
       'T  = ' + safeFixed(jumpT, 4) + ' s\n' +
-      'g  = 8h/T² = ' + safeFixed(GRAVITY, 2) + ' px/s²\n' +
-      'v₀ = gT/2 = ' + safeFixed(JUMP_V0, 2) + ' px/s';
+      'g  = 8×h/T² = ' + safeFixed(GRAVITY, 2) + ' px/s²\n' +
+      'v₀ = g×T/2 = ' + safeFixed(JUMP_V0, 2) + ' px/s';
   }
 
   if (moveFormulaEl) {
@@ -5955,6 +5971,17 @@ function refreshFormula() {
       'v_蹲 = ' + safeFixed(crouchWalkD, 1) + '×格宽/s' + ' ≈ ' + safeFixed(CROUCH_SPD, 1) + ' px/s\n' +
       'v_走 = ' + safeFixed(walkJumpD, 1)  + '×格宽/s' + ' ≈ ' + safeFixed(WALK_SPD, 1)   + ' px/s\n' +
       'v_奔 = ' + safeFixed(runJumpD, 1) + '×格宽/s ≈ ' + safeFixed(RUN_SPD, 1) + ' px/s';
+    // 计算缓加速缓减速距离（无论是否启用，都同步距离输入框的值，确保勾选启用时值已正确）
+    const sAccel = (accelRate > 0.0001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * accelRate) : 0;
+    const sDecel = (decelRate > 0.0001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * decelRate) : 0;
+    if (accelDistIn && document.activeElement !== accelDistIn) {
+      const v = safeNum(sAccel, 0);
+      accelDistIn.value = (v > 0) ? v.toFixed(4) : '0.0001';
+    }
+    if (decelDistIn && document.activeElement !== decelDistIn) {
+      const v = safeNum(sDecel, 0);
+      decelDistIn.value = (v > 0) ? v.toFixed(4) : '0.0001';
+    }
     // 缓加速缓减速开启时：附加加减速公式
     if (smoothSpeedEnabled) {
       // 像素加速度：a_px = a_rate × GRID  px/s²
@@ -5966,17 +5993,13 @@ function refreshFormula() {
       const tAccel = (accelRate > 0.001) ? spdDiff / accelRate : 0;
       // 减速时长：t_d = (v_奔-v_走) / a_减
       const tDecel = (decelRate > 0.001) ? spdDiff / decelRate : 0;
-      // 加速距离（匀加速）：s_a = v_走×t_a + 0.5×a_加×t_a² = (v_奔²-v_走²)/(2a_加)  格
-      const sAccel = (accelRate > 0.001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * accelRate) : 0;
-      // 减速距离（匀减速）：s_d = v_奔×t_d - 0.5×a_减×t_d² = (v_奔²-v_走²)/(2a_减)  格
-      const sDecel = (decelRate > 0.001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * decelRate) : 0;
       txt += '\n--- 缓加速缓减速 ---';
       txt += '\na_加 = ' + safeFixed(accelRate, 1) + ' 格/s² = ' + safeFixed(accelPx, 0) + ' px/s²';
       txt += '\na_减 = ' + safeFixed(decelRate, 1) + ' 格/s² = ' + safeFixed(decelPx, 0) + ' px/s²';
       txt += '\nt_走→奔 = (D_奔-D_走)/a_加 ≈ ' + safeFixed(tAccel, 3) + ' s';
-      txt += '\ns_走→奔 = (D_奔²-D_走²)/(2*a_加) ≈ ' + safeFixed(sAccel, 2) + ' 格';
+      txt += '\ns_走→奔 = (D_奔²-D_走²)/(2×a_加) ≈ ' + safeFixed(sAccel, 2) + ' 格';
       txt += '\nt_奔→走 = (D_奔-D_走)/a_减 ≈ ' + safeFixed(tDecel, 3) + ' s';
-      txt += '\ns_奔→走 = (D_奔²-D_走²)/(2*a_减) ≈ ' + safeFixed(sDecel, 2) + ' 格';
+      txt += '\ns_奔→走 = (D_奔²-D_走²)/(2×a_减) ≈ ' + safeFixed(sDecel, 2) + ' 格';
     }
     moveFormulaEl.textContent = txt;
   }
@@ -5992,9 +6015,57 @@ function refreshFormula() {
   // 更新体力条
   updateStaminaRing();
 }
-[jumpTimeIn, jumpHIn, jumpSegIn, crouchDistIn, walkDistIn, runDistIn, sprintSpeedDistIn, sprintDistIn, airSprintSegIn, accelRateIn, decelRateIn, staminaRecoverIn, staminaRunMaxIn, staminaSprintMaxIn].forEach(el =>
+// 距离输入框：改变时反算加速度/减速度（a = (D_奔²-D_走²)/(2s)），必须在 refreshFormula 数组之前绑定，确保先写 DOM 再读
+// 注意：此处无法使用 refreshFormula 内的 safeNum（其作用域在函数内部），因此使用本地定义的安全数值转换
+(function(){
+  function localSafeNum(v, defaultVal) {
+    const n = +v;
+    if (!isFinite(n) || isNaN(n)) return defaultVal;
+    return n;
+  }
+  [
+    [accelDistIn, accelRateIn, 'accel'],
+    [decelDistIn, decelRateIn, 'decel']
+  ].forEach(([distEl, rateEl, which]) => {
+    distEl && distEl.addEventListener('input', function() {
+      const wD = localSafeNum(walkDistIn ? walkDistIn.value : 2, 2);
+      const rD = localSafeNum(runDistIn  ? runDistIn.value  : 4, 4);
+      const s  = Math.max(0.0001, localSafeNum(distEl.value, 0.0001));
+      const numerator = Math.max(0.0001, rD * rD - wD * wD);
+      const a = Math.max(0.0001, numerator / (2 * s));
+      if (rateEl && document.activeElement !== rateEl) {
+        rateEl.value = a.toFixed(4);
+      }
+      // 同步全局变量（双保险：即使监听器顺序被打乱，全局值也立即生效）
+      if (which === 'accel') accelRate = a;
+      else                   decelRate = a;
+    });
+  });
+})();
+[jumpTimeIn, jumpHIn, jumpSegIn, crouchDistIn, walkDistIn, runDistIn, sprintSpeedDistIn, sprintDistIn, airSprintSegIn, accelRateIn, decelRateIn, accelDistIn, decelDistIn, staminaRecoverIn, staminaRunMaxIn, staminaSprintMaxIn].forEach(el =>
   el && el.addEventListener('input', refreshFormula)
 );
+// 加速度/减速度/距离 四个输入框 blur 时统一格式化到 4 位小数显示
+[accelRateIn, decelRateIn, accelDistIn, decelDistIn].forEach(el => {
+  el && el.addEventListener('blur', function() {
+    const isNumberInput = (el.type || '').toLowerCase() === 'number';
+    const raw = parseFloat(el.value);
+    if (!isFinite(raw)) return;
+    const formatted = raw.toFixed(4);
+    // 三层保障写回，避开 Chrome number 控件视觉/值不一致问题（与 sanitizeNumeric 体系一致）
+    if (isNumberInput) el.value = '';
+    el.value = formatted;
+    const finalVal = formatted;
+    setTimeout(function() {
+      if (isNumberInput) el.value = '';
+      el.value = finalVal;
+    }, 0);
+    // 标记跳过一次 input 捕获清洗，避免二次回写造成视觉脏残留
+    el._sanitizeSkipOnce = true;
+    const ev = new Event('input', { bubbles: true, cancelable: false });
+    el.dispatchEvent(ev);
+  });
+});
 // 蹲下/走动/奔跑速度修改后，保存到当前模式的记忆（各模式独立）
 [[crouchDistIn, 'crouch'], [walkDistIn, 'walk'], [runDistIn, 'run']].forEach(([el, key]) =>
   el && el.addEventListener('input', function() {
@@ -7754,9 +7825,29 @@ document.addEventListener('input', function(e) {
     delete el._sanitizeSkipOnce;
     return;
   }
+  const isNumberInput = (el.type || '').toLowerCase() === 'number';
+  // Chrome <input type="number"> 过渡态处理（修复小数点无法输入/删除时丢失）：
+  // 关键事实：number 控件在显示不完整数字（如 "12."）时，el.value 返回的是"已解析的有效前缀"
+  // （"12"）而非空串。因此用 el.value==='' 判定过渡态是错的——它永不命中。
+  // 后果：清洗逻辑 sanitizeNumeric("12")="12" + isNumberInput 强制回写 el.value="12"，
+  // 把视觉 "12." 覆盖成 "12"，导致：① 输入小数点立刻被吞掉；② "12.5" 删 "5" 应得 "12." 却变 "12"。
+  // 正确判据：原生 input 事件是 InputEvent 实例（手动派发的 new Event('input') 不是，且已被
+  // _sanitizeSkipOnce 放行）。用 inputType 精确区分操作类型：
+  //   - insertText + data==='.' → 输入小数点，必产生过渡态，跳过清洗保留原生视觉
+  //   - delete*（任意删除）       → 可能留下过渡态（如 "12.5"删"5"→"12."），跳过强制回写；
+  //                               但全删（el.value===''）仍走下面正常流程回退 "0"
+  //   （number 控件删除后 el.value 必为合法数字串，无需强制回写清理脏字符）
+  if (isNumberInput && (e instanceof InputEvent)) {
+    const it = e.inputType || '';
+    if (it === 'insertText' && e.data === '.') {
+      return; // 保留 "12." 过渡态视觉
+    }
+    if (it.indexOf('delete') === 0 && el.value !== '') {
+      return; // 删除后可能留过渡态，跳过强制回写；空值继续走回退 "0"
+    }
+  }
   // number 类型浏览器也可能接受 'e'/'E'/'+'/'-'，全部清洗
   const cleaned = sanitizeNumeric(el.value);
-  const isNumberInput = (el.type || '').toLowerCase() === 'number';
   // Chrome 的 number 控件：输入 -/+/e/E 时视觉上显示字符，但因不是合法完整数字，.value 返回空串
   // 这种情况 cleaned === el.value（两边都是空串）会被误判为"无需更新"，导致脏视觉残留。
   // 所以：number 类型无论新旧值是否相等都强制回写一次；其它类型走等值短路优化
@@ -7768,10 +7859,25 @@ document.addEventListener('input', function(e) {
       const beforeClean = sanitizeNumeric(before);
       pos = beforeClean.length;
     }
+    if (isNumberInput) el.value = '';
     el.value = cleaned;
+    // setTimeout 0 再写一次：避开 Chrome number 控件内部 visual/value 不一致的脏缓冲区（与 keydown 符号变换三层保障一致）
+    const finalVal = cleaned;
+    const finalPos = pos;
+    setTimeout(function() {
+      if (isNumberInput) el.value = '';
+      el.value = finalVal;
+      if (typeof finalPos === 'number') {
+        try { el.setSelectionRange(finalPos, finalPos); } catch(_) {}
+      }
+    }, 0);
     try { el.setSelectionRange(pos, pos); } catch(_) {}
-    // 捕获阶段先于业务 target-phase 监听器完成清洗；无需重新派发 input 事件
-    // （业务监听器在 target phase 执行时，读取 el.value 已是清洗值）
+    // 派发 input 事件，标记跳过此轮清洗避免循环（与 keydown 符号操作逻辑一致）
+    // 关键修复：number 输入框点击 step 上下箭头时，捕获阶段先修改 el.value 会导致 Chrome 内部后续目标阶段
+    // 不再派发原始 input 事件给业务监听器，必须手动重新派发一次才能触发业务逻辑（否则直接输入靠 input 事件因路径不同没问题）
+    el._sanitizeSkipOnce = true;
+    const ev = new Event('input', { bubbles: true, cancelable: false });
+    el.dispatchEvent(ev);
   }
 }, true); // 捕获阶段，在业务监听器之前先清洗
 // keydown 捕获：按 -/− 翻转正负号，按 + 或 =（均无需 Shift）强制去前导负号变正；始终阻止 e/E；
@@ -7903,6 +8009,17 @@ document.addEventListener('beforeinput', function(e) {
   // 非数字/小数点：尝试直接取消
   if (!/^[0-9.]+$/.test(e.data) && e.cancelable) {
     e.preventDefault();
+    return;
+  }
+  // 限制最多一个小数点：当前值已含小数点且本次输入也含小数点 → 阻止
+  // （number 控件原生已限制，text 控件需此拦截；number 控件处于 "12." 过渡态时 el.value=''
+  //  读不到小数点，由 Chrome 原生拒绝二次小数点，此处对可读值额外兜底）
+  if (e.data.indexOf('.') !== -1 && e.cancelable) {
+    const cur = el.value || '';
+    if (cur.indexOf('.') !== -1) {
+      e.preventDefault();
+      return;
+    }
   }
 }, true);
 
