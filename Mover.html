@@ -5910,7 +5910,7 @@ let staminaDepleted = false;       // 体力是否已耗尽（耗尽后必须松
 let staminaShiftRecovering = false; // 冲刺模式：按 Shift 期间因体力不足启动的持续恢复标志，恢复到满/松手/冲刺前保持 true
 
 /* ==================== 公式面板 ==================== */
-function refreshFormula() {
+function refreshFormula(e) {
   // 安全获取数值，防止 NaN 和 Infinity
   function safeNum(v, defaultVal) {
     const n = +v;
@@ -5920,6 +5920,16 @@ function refreshFormula() {
   
   const hGrid = safeNum(jumpHIn ? jumpHIn.value : 4, 4);
   jumpMaxH   = hGrid * GRID;
+  // 体感一致性：用户调整跳跃高度时，保持重力 g 不变，反算期望跳跃时间 T = √(8h/g)
+  // 这样跳跃的"重量感"（下落加速度 g）保持一致，只是跳得越高滞空越长
+  // 判据：e.target === jumpHIn（用户正在编辑高度输入框）。编辑时间/导入配置/初始化等走原行为
+  // GRAVITY 是上一帧计算的全局值，首次调用时由默认 h/T 算出，后续保持上一次的 g
+  if (e && e.target === jumpHIn && GRAVITY > 0.0001 && jumpMaxH > 0.0001) {
+    const newT = Math.sqrt((8 * jumpMaxH) / GRAVITY);
+    if (isFinite(newT) && newT > 0.01 && jumpTimeIn) {
+      jumpTimeIn.value = newT.toFixed(4);
+    }
+  }
   jumpT      = Math.max(0.01, safeNum(jumpTimeIn ? jumpTimeIn.value : 1.0, 1.0));
   crouchWalkD= safeNum(crouchDistIn ? crouchDistIn.value : 1.2, 1.2);
   walkJumpD  = safeNum(walkDistIn ? walkDistIn.value : 2, 2);
@@ -5971,16 +5981,42 @@ function refreshFormula() {
       'v_蹲 = ' + safeFixed(crouchWalkD, 1) + '×格宽/s' + ' ≈ ' + safeFixed(CROUCH_SPD, 1) + ' px/s\n' +
       'v_走 = ' + safeFixed(walkJumpD, 1)  + '×格宽/s' + ' ≈ ' + safeFixed(WALK_SPD, 1)   + ' px/s\n' +
       'v_奔 = ' + safeFixed(runJumpD, 1) + '×格宽/s ≈ ' + safeFixed(RUN_SPD, 1) + ' px/s';
-    // 计算缓加速缓减速距离（无论是否启用，都同步距离输入框的值，确保勾选启用时值已正确）
-    const sAccel = (accelRate > 0.0001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * accelRate) : 0;
-    const sDecel = (decelRate > 0.0001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * decelRate) : 0;
-    if (accelDistIn && document.activeElement !== accelDistIn) {
-      const v = safeNum(sAccel, 0);
-      accelDistIn.value = (v > 0) ? v.toFixed(4) : '0.0001';
-    }
-    if (decelDistIn && document.activeElement !== decelDistIn) {
-      const v = safeNum(sDecel, 0);
-      decelDistIn.value = (v > 0) ? v.toFixed(4) : '0.0001';
+    // 缓加速缓减速距离/加速度计算
+    // - smoothSpeedEnabled 开启且本次 refresh 由编辑奔跑/走动速度触发：保持加速/减速距离不变，反算加速度/减速度
+    //   公式：a = (D_奔² - D_走²) / (2 × s)，距离 s 取当前输入框值（保持不变）
+    // - 其他情况（编辑 rate/dist、勾选开关、导入配置、初始化等）：原行为，根据 rate 正算距离显示
+    // 判据说明：用 e.target（事件目标元素）而非 document.activeElement。activeElement 在
+    // sanitize 捕获监听器清空/重写 el.value 时可能不可靠；e.target 始终指向触发 input 事件的元素。
+    // refreshFormula() 直接调用时 e 为 undefined → editingRunWalk=false → 走原 else 分支。
+    const editingRunWalk = !!(e && (e.target === runDistIn || e.target === walkDistIn));
+    const keepDistance = smoothSpeedEnabled && editingRunWalk;
+    let sAccel, sDecel;
+    if (keepDistance) {
+      // 读取保持的加速/减速距离（来自输入框当前值）
+      sAccel = Math.max(0.0001, safeNum(accelDistIn ? accelDistIn.value : 0.0001, 0.0001));
+      sDecel = Math.max(0.0001, safeNum(decelDistIn ? decelDistIn.value : 0.0001, 0.0001));
+      const numerator = runJumpD * runJumpD - walkJumpD * walkJumpD;
+      if (numerator > 0.0001) {
+        const newAccelRate = Math.max(0.0001, numerator / (2 * sAccel));
+        const newDecelRate = Math.max(0.0001, numerator / (2 * sDecel));
+        accelRate = newAccelRate;
+        decelRate = newDecelRate;
+        if (accelRateIn) accelRateIn.value = newAccelRate.toFixed(4);
+        if (decelRateIn) decelRateIn.value = newDecelRate.toFixed(4);
+      }
+      // 距离输入框保持不变，不重写
+    } else {
+      // 原行为：根据当前 rate 正算距离显示
+      sAccel = (accelRate > 0.0001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * accelRate) : 0;
+      sDecel = (decelRate > 0.0001) ? (runJumpD * runJumpD - walkJumpD * walkJumpD) / (2 * decelRate) : 0;
+      if (accelDistIn && document.activeElement !== accelDistIn) {
+        const v = safeNum(sAccel, 0);
+        accelDistIn.value = (v > 0) ? v.toFixed(4) : '0.0001';
+      }
+      if (decelDistIn && document.activeElement !== decelDistIn) {
+        const v = safeNum(sDecel, 0);
+        decelDistIn.value = (v > 0) ? v.toFixed(4) : '0.0001';
+      }
     }
     // 缓加速缓减速开启时：附加加减速公式
     if (smoothSpeedEnabled) {
